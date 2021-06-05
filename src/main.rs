@@ -175,7 +175,7 @@ pub fn open_window() -> *mut core::ffi::c_void {
         app_menu_item.setSubmenu_(app_menu);
 
         // create Window
-        let mut window = NSWindow::alloc(nil)
+        let window = NSWindow::alloc(nil)
             .initWithContentRect_styleMask_backing_defer_(
                 NSRect::new(NSPoint::new(0., 0.), NSSize::new(200., 200.)),
                 NSWindowStyleMask::NSTitledWindowMask,
@@ -191,7 +191,8 @@ pub fn open_window() -> *mut core::ffi::c_void {
         let current_app = NSRunningApplication::currentApplication(nil);
         current_app.activateWithOptions_(NSApplicationActivateIgnoringOtherApps);
         app.run();
-        return &mut window as *mut _ as *mut _
-        // return Box::into_raw(Box::new(window))
+        // return &mut window as *mut _ as *mut _
+        // return &mut window.contentView() as *mut _ as *mut _
+        return &mut window.contentView() as *mut _ as *mut _
     }
 }
