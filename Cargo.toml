@@ -8,3 +8,4 @@ resolver = "2"
 
 [dependencies]
 vst = "~0.2.1"
+cocoa = "~0.24.0"
