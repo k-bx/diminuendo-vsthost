@@ -11,3 +11,8 @@ apres = "~0.3.0"
 # midi-control = { "path" = "../midi-control" }
 midi-control = { "git" = "https://gitlab.com/k-bx/midi-control", rev = "0a01b38749811556db31b8767e76b10138f5f73e" }
 # midi-control = "~0.2.0"
+sqlx = { version = "~0.5.4", features = [ "runtime-tokio-rustls", "sqlite" ] }
+thiserror = "~1.0.24"
+tokio = { version = "~1.6.0", features = [ "full" ] }
+tokio-stream = "~0.1.6"
+chrono = "~0.4.19"
