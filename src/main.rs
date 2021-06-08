@@ -10,6 +10,8 @@ use tokio_stream::StreamExt;
 
 #[derive(Error, Debug)]
 pub enum AppError {
+    #[error("BL")]
+    BL { msg: String },
     #[error("sqlx::Error")]
     Sqlx {
         #[from]
@@ -73,6 +75,17 @@ order by dt desc
     }
 
     println!("> grouped into {} minute groups", groups.len());
+    groups.reverse();
+
+    for group in groups.iter() {
+        let (begin, end) = group_begin_end(group)?;
+        println!(
+            "> group [{:?}, {:?}) - {} events",
+            begin,
+            end,
+            group.iter().map(|x| x.1).sum::<i64>()
+        );
+    }
 
     // todo: get and print data intervals
 
@@ -112,6 +125,20 @@ pub fn parse_minute_date(s: &str) -> Result<DateTime<Utc>, AppError> {
         chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:00")?,
         Utc,
     ))
+}
+
+/// Last minute should be treated as open, e.g. [a, b)
+pub fn group_begin_end(
+    group: &Vec<(DateTime<Utc>, i64)>,
+) -> Result<(DateTime<Utc>, DateTime<Utc>), AppError> {
+    let first = group.first().ok_or(AppError::BL {
+        msg: "Group with no first".to_string(),
+    })?;
+    let last = group.last().ok_or(AppError::BL {
+        msg: "Group with no last".to_string(),
+    })?;
+    let last_plus_minute = last.0 + chrono::Duration::minutes(1);
+    Ok((first.0, last_plus_minute))
 }
 
 #[cfg(test)]
