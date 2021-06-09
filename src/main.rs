@@ -1,8 +1,8 @@
 #![feature(backtrace)]
 use apres::{MIDIEvent, MIDI};
 use chrono::prelude::*;
-use midi_control::{KeyEvent, MidiMessage};
-use sqlx::sqlite::SqlitePoolOptions;
+use midi_control::{ControlEvent, KeyEvent, MidiMessage};
+use sqlx::sqlite::{SqlitePool, SqlitePoolOptions};
 use sqlx::Row;
 use std::backtrace::Backtrace;
 use thiserror::Error;
@@ -24,6 +24,18 @@ pub enum AppError {
         source: chrono::ParseError,
         backtrace: Backtrace,
     },
+}
+
+impl From<&str> for AppError {
+    fn from(v: &str) -> Self {
+        AppError::BL { msg: v.to_string() }
+    }
+}
+
+impl From<String> for AppError {
+    fn from(v: String) -> Self {
+        AppError::BL { msg: v }
+    }
 }
 
 #[tokio::main]
@@ -77,45 +89,25 @@ order by dt desc
     println!("> grouped into {} minute groups", groups.len());
     groups.reverse();
 
-    for group in groups.iter() {
-        let (begin, end) = group_begin_end(group)?;
-        println!(
-            "> group [{:?}, {:?}) - {} events",
-            begin,
-            end,
-            group.iter().map(|x| x.1).sum::<i64>()
-        );
-    }
-
-    // todo: get and print data intervals
-
-    // let data: Vec<u8> = vec![
-    //     0x00, 0x00, 0x09, 0x90, 0x3C, 0x3F, 0x00, 0x00, 0x09, 0x90, 0x3C, 0x00, 0x00, 0x00,
-    // ];
-
-    // let data: &[u8] = &data;
-    // let messages: Vec<MidiMessage> = midi_control::message::from_multi_filtered(&data).unwrap();
-    // println!("{:?}", messages);
-
-    // let mut midi = MIDI::new();
-    // // "C" pressed -> ["0x09", "0x90", "0x3C", "0x3F"]
-    // // "C" unpressed -> ["0x09", "0x90", "0x3C"]
-    // // midi.insert_event(0, 0, MIDIEvent::NoteOn(0, 64, 100));
-    // // midi.push_event(0, 120, MIDIEvent::NoteOn(0, 64, 100));
-    // for (i, msg) in messages.iter().enumerate() {
-    //     let track = 0;
-    //     let wait = i * 60; // todo compute from timestamp
-    //     match msg {
-    //         MidiMessage::NoteOn(_ch, KeyEvent { key, value }) => {
-    //             let event = MIDIEvent::NoteOn(0, *key, *value);
-    //             midi.push_event(track, wait, event);
-    //         }
-    //         // todo rest
-    //         _ => {}
-    //     }
+    // for group in groups.iter() {
+    //     let (begin, end) = group_begin_end(group)?;
+    //     println!(
+    //         "> group [{:?}, {:?}) - {} events",
+    //         begin,
+    //         end,
+    //         group.iter().map(|x| x.1).sum::<i64>()
+    //     );
     // }
-    // midi.push_event(0, 1800, MIDIEvent::NoteOff(0, 64, 100));
-    // midi.save("target/output.mid");
+
+    let latest_group = groups.first().ok_or("No groups found")?;
+    let (latest_begin, latest_end) = group_begin_end(latest_group)?;
+    println!(
+        "> group [{:?}, {:?}) - {} events",
+        latest_begin,
+        latest_end,
+        latest_group.iter().map(|x| x.1).sum::<i64>()
+    );
+    group_midi_to_wav(&pool, latest_begin, latest_end).await?;
 
     Ok(())
 }
@@ -131,14 +123,70 @@ pub fn parse_minute_date(s: &str) -> Result<DateTime<Utc>, AppError> {
 pub fn group_begin_end(
     group: &Vec<(DateTime<Utc>, i64)>,
 ) -> Result<(DateTime<Utc>, DateTime<Utc>), AppError> {
-    let first = group.first().ok_or(AppError::BL {
-        msg: "Group with no first".to_string(),
-    })?;
-    let last = group.last().ok_or(AppError::BL {
-        msg: "Group with no last".to_string(),
-    })?;
+    let first = group.first().ok_or("Group with no first".to_string())?;
+    let last = group.last().ok_or("Group with no last")?;
     let last_plus_minute = last.0 + chrono::Duration::minutes(1);
     Ok((first.0, last_plus_minute))
+}
+
+/// End is excluding
+pub async fn group_midi_to_wav(
+    pool: &SqlitePool,
+    begin: DateTime<Utc>,
+    end: DateTime<Utc>,
+) -> Result<(), AppError> {
+    let begin_ts = begin.timestamp_millis();
+    let mut rows =
+        sqlx::query(r#"select ts, events from events where ts >= ? and ts < ? order by ts asc"#)
+            .bind(begin.timestamp_millis())
+            .bind(end.timestamp_millis())
+            .fetch(pool);
+    let mut midi = MIDI::new();
+    println!("> get_ppqn: {}", midi.get_ppqn());
+    let mut first_ts = None;
+    while let Some(row) = rows.try_next().await? {
+        let ts: i64 = row.try_get("ts")?;
+        if let None = first_ts {
+            first_ts = Some(ts);
+        }
+        let events: Vec<u8> = row.try_get("events")?;
+        let data: &[u8] = &events;
+        // println!("> data: {:?}", &data);
+        let messages: Vec<MidiMessage> = midi_control::message::from_multi_filtered(&data).unwrap();
+        // println!("> messages: {:?}", messages);
+        for msg in messages.iter() {
+            let track = 0;
+            let wait = (ts - first_ts.unwrap_or(begin_ts)) * 240 / 1000;
+            match msg {
+                MidiMessage::NoteOn(_ch, KeyEvent { key, value }) => {
+                    let event = MIDIEvent::NoteOn(0, *key, *value);
+                    midi.insert_event(track, wait as usize, event);
+                }
+                MidiMessage::NoteOff(_ch, KeyEvent { key, value }) => {
+                    let event = MIDIEvent::NoteOff(0, *key, *value);
+                    midi.insert_event(track, wait as usize, event);
+                }
+                MidiMessage::ControlChange(ch, ControlEvent { control, value }) => {
+                    let event = MIDIEvent::ControlChange(*ch as u8, *control, *value);
+                    midi.insert_event(track, wait as usize, event);
+                }
+                _ => {}
+            }
+        }
+        // midi.push_event(0, 1800, MIDIEvent::NoteOff(0, 64, 100));
+    }
+
+    // // midi.insert_event(0, 0, MIDIEvent::NoteOn(0, 64, 100));
+    // // midi.push_event(0, 120, MIDIEvent::NoteOn(0, 64, 100));
+    midi.save("target/output.mid");
+    Ok(())
+}
+
+pub fn from_timestamp_millis(millis: i64) -> DateTime<Utc> {
+    DateTime::from_utc(
+        NaiveDateTime::from_timestamp(millis / 1000, (millis % 1000) as u32),
+        Utc,
+    )
 }
 
 #[cfg(test)]

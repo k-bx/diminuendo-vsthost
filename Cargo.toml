@@ -9,7 +9,7 @@ resolver = "2"
 [dependencies]
 apres = "~0.3.0"
 # midi-control = { "path" = "../midi-control" }
-midi-control = { "git" = "https://gitlab.com/k-bx/midi-control", rev = "0a01b38749811556db31b8767e76b10138f5f73e" }
+midi-control = { "git" = "https://gitlab.com/k-bx/midi-control", rev = "2d4de1fcd93ef5f26a2788ce95b8e124af6c1cdb" }
 # midi-control = "~0.2.0"
 sqlx = { version = "~0.5.4", features = [ "runtime-tokio-rustls", "sqlite" ] }
 thiserror = "~1.0.24"
