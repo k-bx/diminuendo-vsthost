@@ -24,6 +24,12 @@ pub enum AppError {
         source: chrono::ParseError,
         backtrace: Backtrace,
     },
+    #[error("midi_control::ParsingError")]
+    MidiControlParsing {
+        #[from]
+        source: midi_control::message::ParsingError,
+        backtrace: Backtrace,
+    },
 }
 
 impl From<&str> for AppError {
@@ -89,25 +95,27 @@ order by dt desc
     println!("> grouped into {} minute groups", groups.len());
     groups.reverse();
 
-    // for group in groups.iter() {
-    //     let (begin, end) = group_begin_end(group)?;
-    //     println!(
-    //         "> group [{:?}, {:?}) - {} events",
-    //         begin,
-    //         end,
-    //         group.iter().map(|x| x.1).sum::<i64>()
-    //     );
-    // }
+    for group in groups.iter() {
+        let (begin, end) = group_begin_end(group)?;
+        // println!(
+        //     "> group [{:?}, {:?}) - {} events",
+        //     begin,
+        //     end,
+        //     group.iter().map(|x| x.1).sum::<i64>()
+        // );
 
-    let latest_group = groups.first().ok_or("No groups found")?;
-    let (latest_begin, latest_end) = group_begin_end(latest_group)?;
-    println!(
-        "> group [{:?}, {:?}) - {} events",
-        latest_begin,
-        latest_end,
-        latest_group.iter().map(|x| x.1).sum::<i64>()
-    );
-    group_midi_to_wav(&pool, latest_begin, latest_end).await?;
+        // todo: skip if already processed
+        group_midi_to_wav(&pool, begin, end).await?;
+    }
+
+    // let latest_group = groups.first().ok_or("No groups found")?;
+    // let (latest_begin, latest_end) = group_begin_end(latest_group)?;
+    // println!(
+    //     "> group [{:?}, {:?}) - {} events",
+    //     latest_begin,
+    //     latest_end,
+    //     latest_group.iter().map(|x| x.1).sum::<i64>()
+    // );
 
     Ok(())
 }
@@ -142,7 +150,7 @@ pub async fn group_midi_to_wav(
             .bind(end.timestamp_millis())
             .fetch(pool);
     let mut midi = MIDI::new();
-    println!("> get_ppqn: {}", midi.get_ppqn());
+    // println!("> get_ppqn: {}", midi.get_ppqn());
     let mut first_ts = None;
     while let Some(row) = rows.try_next().await? {
         let ts: i64 = row.try_get("ts")?;
@@ -151,26 +159,34 @@ pub async fn group_midi_to_wav(
         }
         let events: Vec<u8> = row.try_get("events")?;
         let data: &[u8] = &events;
-        // println!("> data: {:?}", &data);
-        let messages: Vec<MidiMessage> = midi_control::message::from_multi_filtered(&data).unwrap();
-        // println!("> messages: {:?}", messages);
-        for msg in messages.iter() {
-            let track = 0;
-            let wait = (ts - first_ts.unwrap_or(begin_ts)) * 240 / 1000;
-            match msg {
-                MidiMessage::NoteOn(_ch, KeyEvent { key, value }) => {
-                    let event = MIDIEvent::NoteOn(0, *key, *value);
-                    midi.insert_event(track, wait as usize, event);
+        // let messages: Vec<MidiMessage> = midi_control::message::from_multi_filtered(&data)?;
+        let e_messages = midi_control::message::from_multi_filtered(&data);
+        match e_messages {
+            Err(e) => {
+                println!("> data: {:?}; data.len(): {}", &data, data.len());
+                Err(e)?;
+            }
+            Ok(messages) => {
+                // println!("> messages: {:?}", messages);
+                for msg in messages.iter() {
+                    let track = 0;
+                    let wait = (ts - first_ts.unwrap_or(begin_ts)) * 240 / 1000;
+                    match msg {
+                        MidiMessage::NoteOn(_ch, KeyEvent { key, value }) => {
+                            let event = MIDIEvent::NoteOn(0, *key, *value);
+                            midi.insert_event(track, wait as usize, event);
+                        }
+                        MidiMessage::NoteOff(_ch, KeyEvent { key, value }) => {
+                            let event = MIDIEvent::NoteOff(0, *key, *value);
+                            midi.insert_event(track, wait as usize, event);
+                        }
+                        MidiMessage::ControlChange(ch, ControlEvent { control, value }) => {
+                            let event = MIDIEvent::ControlChange(*ch as u8, *control, *value);
+                            midi.insert_event(track, wait as usize, event);
+                        }
+                        _ => {}
+                    }
                 }
-                MidiMessage::NoteOff(_ch, KeyEvent { key, value }) => {
-                    let event = MIDIEvent::NoteOff(0, *key, *value);
-                    midi.insert_event(track, wait as usize, event);
-                }
-                MidiMessage::ControlChange(ch, ControlEvent { control, value }) => {
-                    let event = MIDIEvent::ControlChange(*ch as u8, *control, *value);
-                    midi.insert_event(track, wait as usize, event);
-                }
-                _ => {}
             }
         }
         // midi.push_event(0, 1800, MIDIEvent::NoteOff(0, 64, 100));
@@ -178,7 +194,12 @@ pub async fn group_midi_to_wav(
 
     // // midi.insert_event(0, 0, MIDIEvent::NoteOn(0, 64, 100));
     // // midi.push_event(0, 120, MIDIEvent::NoteOn(0, 64, 100));
-    midi.save("target/output.mid");
+    let fname = format!(
+        "/home/kb/Dropbox/Documents/Diminuendo/diminuendo-{}.mid",
+        begin.format("%Y-%m-%d-%H-%M-%S")
+    );
+    println!("> saving {}", fname);
+    midi.save(&fname);
     Ok(())
 }
 
